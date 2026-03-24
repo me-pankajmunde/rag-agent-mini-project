@@ -7,7 +7,7 @@ import uuid
 import chromadb
 import PyPDF2
 from sentence_transformers import SentenceTransformer
-import anthropic
+from openai import OpenAI
 
 
 # ── Document Loading ──────────────────────────────────────────────────────────
@@ -152,15 +152,15 @@ def list_indexed_documents(collection) -> list:
     return sorted(sources)
 
 
-# ── LLM (Claude) ─────────────────────────────────────────────────────────────
+# ── LLM (OpenAI) ─────────────────────────────────────────────────────────────
 
-def ask_claude(api_key: str, context: str, question: str, history: list) -> str:
+def ask_openai(api_key: str, context: str, question: str, history: list) -> str:
     """
-    Send the question + retrieved context to Claude and return the answer.
+    Send the question + retrieved context to OpenAI and return the answer.
 
     history: list of {"role": "user"|"assistant", "content": str}
     """
-    client = anthropic.Anthropic(api_key=api_key)
+    client = OpenAI(api_key=api_key)
 
     system_prompt = (
         "You are a helpful AI assistant that answers questions based on the provided document context.\n"
@@ -170,14 +170,14 @@ def ask_claude(api_key: str, context: str, question: str, history: list) -> str:
         f"Context from documents:\n{context}"
     )
 
-    # Build messages: prior history + current question
-    messages = list(history)
+    # Build messages: system + prior history + current question
+    messages = [{"role": "system", "content": system_prompt}]
+    messages.extend(history)
     messages.append({"role": "user", "content": question})
 
-    response = client.messages.create(
-        model="claude-sonnet-4-6",
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
         max_tokens=1024,
-        system=system_prompt,
         messages=messages
     )
-    return response.content[0].text
+    return response.choices[0].message.content

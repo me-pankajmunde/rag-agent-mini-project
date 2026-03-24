@@ -49,12 +49,12 @@ if "messages" not in st.session_state:
 with st.sidebar:
     st.header("Upload Documents")
 
-    api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    api_key = os.getenv("OPENAI_API_KEY", "")
     if not api_key:
-        api_key = st.text_input("Anthropic API Key", type="password",
-                                help="Get your key from console.anthropic.com")
+        api_key = st.text_input("OpenAI API Key", type="password",
+                                help="Get your key from platform.openai.com")
         if api_key:
-            os.environ["ANTHROPIC_API_KEY"] = api_key
+            os.environ["OPENAI_API_KEY"] = api_key
 
     uploaded_file = st.file_uploader(
         "Choose a PDF or TXT file",
@@ -97,7 +97,7 @@ with st.sidebar:
         st.info("No documents indexed yet. Upload a file above.")
 
     st.divider()
-    st.caption("Built with Streamlit + ChromaDB + Claude")
+    st.caption("Built with Streamlit + ChromaDB + OpenAI")
 
 # ── Main Chat Area ────────────────────────────────────────────────────────────
 
@@ -115,9 +115,9 @@ question = st.chat_input("Ask a question about your documents...")
 
 if question:
     # Validate prerequisites
-    api_key = os.getenv("ANTHROPIC_API_KEY", "")
+    api_key = os.getenv("OPENAI_API_KEY", "")
     if not api_key:
-        st.error("Please enter your Anthropic API key in the sidebar.")
+        st.error("Please enter your OpenAI API key in the sidebar.")
         st.stop()
 
     if collection.count() == 0:
@@ -147,12 +147,12 @@ if question:
         history = [{"role": m["role"], "content": m["content"]}
                    for m in st.session_state.messages[:-1]]  # exclude current question
 
-        # Ask Claude
+        # Ask OpenAI
         with st.spinner("Generating answer..."):
             try:
-                answer = rag_engine.ask_claude(api_key, context, question, history)
+                answer = rag_engine.ask_openai(api_key, context, question, history)
             except Exception as e:
-                answer = f"Error calling Claude API: {e}"
+                answer = f"Error calling OpenAI API: {e}"
         sources = chunks
 
     # Show assistant response
