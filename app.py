@@ -23,6 +23,15 @@ st.set_page_config(
 st.title("📚 RAG AI Assistant")
 st.caption("Upload documents and ask questions — answers are grounded in your files.")
 
+
+def distance_to_confidence(distance: float) -> str:
+    """Map vector distance to a simple confidence label for demo readability."""
+    if distance <= 0.25:
+        return "High"
+    if distance <= 0.45:
+        return "Medium"
+    return "Low"
+
 # ── Cached Resources (loaded once, not on every click) ────────────────────────
 
 @st.cache_resource
@@ -48,6 +57,32 @@ if "messages" not in st.session_state:
 
 with st.sidebar:
     st.header("Upload Documents")
+
+    st.subheader("RAG Settings")
+    top_k = st.slider(
+        "Top-K Retrieval",
+        min_value=1,
+        max_value=10,
+        value=5,
+        help="Number of most relevant chunks retrieved for each question"
+    )
+    chunk_size = st.slider(
+        "Chunk Size",
+        min_value=200,
+        max_value=1000,
+        value=500,
+        step=50,
+        help="Number of characters per chunk during indexing"
+    )
+    max_overlap = max(20, chunk_size // 2)
+    overlap = st.slider(
+        "Chunk Overlap",
+        min_value=20,
+        max_value=max_overlap,
+        value=min(50, max_overlap),
+        step=10,
+        help="Overlap between consecutive chunks during indexing"
+    )
 
     api_key = os.getenv("GEMINI_API_KEY", "")
     if not api_key:
@@ -76,9 +111,12 @@ with st.sidebar:
                     if not text:
                         st.error("Could not extract text from the file.")
                     else:
-                        chunks = rag_engine.chunk_text(text)
+                        chunks = rag_engine.chunk_text(text, chunk_size=chunk_size, overlap=overlap)
                         count = rag_engine.add_document(collection, model, chunks, uploaded_file.name)
-                        st.success(f"Indexed {count} chunks from **{uploaded_file.name}**")
+                        st.success(
+                            f"Indexed {count} chunks from **{uploaded_file.name}** "
+                            f"(chunk_size={chunk_size}, overlap={overlap})"
+                        )
                 except Exception as e:
                     st.error(f"Error: {e}")
                 finally:
@@ -93,6 +131,11 @@ with st.sidebar:
         for doc in docs:
             st.write(f"- {doc}")
         st.caption(f"Total chunks in DB: {collection.count()}")
+
+        if st.button("Clear Indexed Data"):
+            deleted = rag_engine.clear_indexed_documents(collection)
+            st.session_state.messages = []
+            st.success(f"Cleared {deleted} indexed chunks and reset chat history.")
     else:
         st.info("No documents indexed yet. Upload a file above.")
 
@@ -108,7 +151,11 @@ for msg in st.session_state.messages:
         if "sources" in msg:
             with st.expander("Sources used"):
                 for src in msg["sources"]:
-                    st.caption(f"**{src['source']}** (distance: {src['distance']})\n\n{src['text'][:300]}...")
+                    confidence = distance_to_confidence(src["distance"])
+                    st.caption(
+                        f"**{src['source']}** | Confidence: **{confidence}** | Distance: {src['distance']}\n\n"
+                        f"{src['text'][:300]}..."
+                    )
 
 # Chat input
 question = st.chat_input("Ask a question about your documents...")
@@ -131,13 +178,10 @@ if question:
 
     # Retrieve relevant chunks
     with st.spinner("Searching documents..."):
-        chunks = rag_engine.search_similar(collection, model, question, n_results=5)
+        chunks = rag_engine.search_similar(collection, model, question, n_results=top_k)
 
-    if not chunks:
-        answer = "I couldn't find any relevant information in the indexed documents."
-        sources = []
-    else:
-        # Format context for Claude
+    if chunks:
+        # Format context for Gemini
         context_parts = []
         for i, chunk in enumerate(chunks, 1):
             context_parts.append(f"[{i}. From: {chunk['source']}]\n{chunk['text']}")
@@ -147,21 +191,33 @@ if question:
         history = [{"role": m["role"], "content": m["content"]}
                    for m in st.session_state.messages[:-1]]  # exclude current question
 
-        # Ask Gemini
-        with st.spinner("Generating answer..."):
-            try:
-                answer = rag_engine.ask_gemini(api_key, context, question, history)
-            except Exception as e:
-                answer = f"Error calling Gemini API: {e}"
         sources = chunks
+    else:
+        context = ""
+        history = []
+        sources = []
 
     # Show assistant response
     with st.chat_message("assistant"):
-        st.markdown(answer)
+        if not chunks:
+            answer = "I couldn't find relevant information in the indexed documents for that question."
+            st.markdown(answer)
+        else:
+            try:
+                answer = st.write_stream(
+                    rag_engine.ask_gemini_stream(api_key, context, question, history)
+                )
+            except Exception as e:
+                answer = f"Error calling Gemini API: {e}"
+                st.markdown(answer)
         if sources:
             with st.expander("Sources used"):
                 for src in sources:
-                    st.caption(f"**{src['source']}** (distance: {src['distance']})\n\n{src['text'][:300]}...")
+                    confidence = distance_to_confidence(src["distance"])
+                    st.caption(
+                        f"**{src['source']}** | Confidence: **{confidence}** | Distance: {src['distance']}\n\n"
+                        f"{src['text'][:300]}..."
+                    )
 
     st.session_state.messages.append({
         "role": "assistant",

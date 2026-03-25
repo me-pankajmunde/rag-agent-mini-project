@@ -10,6 +10,14 @@ from sentence_transformers import SentenceTransformer
 import google.generativeai as genai
 
 
+DEFAULT_GEMINI_MODEL = "gemini-2.0-flash"
+
+
+def get_gemini_model_name() -> str:
+    """Return Gemini model name from env or default stable model."""
+    return os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
+
+
 # ── Document Loading ──────────────────────────────────────────────────────────
 
 def extract_text_from_pdf(file_path: str) -> str:
@@ -152,6 +160,19 @@ def list_indexed_documents(collection) -> list:
     return sorted(sources)
 
 
+def clear_indexed_documents(collection) -> int:
+    """Delete all indexed chunks and return number of deleted items."""
+    total = collection.count()
+    if total == 0:
+        return 0
+
+    all_items = collection.get(include=[])
+    ids = all_items.get("ids", [])
+    if ids:
+        collection.delete(ids=ids)
+    return len(ids)
+
+
 # ── LLM (Gemini) ─────────────────────────────────────────────────────────────
 
 def ask_gemini(api_key: str, context: str, question: str, history: list) -> str:
@@ -171,7 +192,7 @@ def ask_gemini(api_key: str, context: str, question: str, history: list) -> str:
     )
 
     llm = genai.GenerativeModel(
-        model_name="gemini-3.1-flash-lite-preview",
+        model_name=get_gemini_model_name(),
         system_instruction=system_prompt
     )
 
@@ -187,3 +208,39 @@ def ask_gemini(api_key: str, context: str, question: str, history: list) -> str:
         generation_config=genai.GenerationConfig(max_output_tokens=1024)
     )
     return response.text
+
+
+def ask_gemini_stream(api_key: str, context: str, question: str, history: list):
+    """
+    Send the question + retrieved context to Gemini and stream the answer.
+    Yields text chunks as they arrive.
+    """
+    genai.configure(api_key=api_key)
+
+    system_prompt = (
+        "You are a helpful AI assistant that answers questions based on the provided document context.\n"
+        "Use ONLY the information given in the context to answer the question.\n"
+        "If the context does not contain enough information, say so clearly.\n"
+        "Always mention which document your answer comes from when possible.\n\n"
+        f"Context from documents:\n{context}"
+    )
+
+    llm = genai.GenerativeModel(
+        model_name=get_gemini_model_name(),
+        system_instruction=system_prompt
+    )
+
+    gemini_history = []
+    for msg in history:
+        role = "model" if msg["role"] == "assistant" else "user"
+        gemini_history.append({"role": role, "parts": [msg["content"]]})
+
+    chat = llm.start_chat(history=gemini_history)
+    response = chat.send_message(
+        question,
+        stream=True,
+        generation_config=genai.GenerationConfig(max_output_tokens=1024)
+    )
+    for chunk in response:
+        if chunk.text:
+            yield chunk.text
