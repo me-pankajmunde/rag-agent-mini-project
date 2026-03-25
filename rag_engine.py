@@ -7,7 +7,7 @@ import uuid
 import chromadb
 import PyPDF2
 from sentence_transformers import SentenceTransformer
-from openai import OpenAI
+import google.generativeai as genai
 
 
 # ── Document Loading ──────────────────────────────────────────────────────────
@@ -152,15 +152,15 @@ def list_indexed_documents(collection) -> list:
     return sorted(sources)
 
 
-# ── LLM (OpenAI) ─────────────────────────────────────────────────────────────
+# ── LLM (Gemini) ─────────────────────────────────────────────────────────────
 
-def ask_openai(api_key: str, context: str, question: str, history: list) -> str:
+def ask_gemini(api_key: str, context: str, question: str, history: list) -> str:
     """
-    Send the question + retrieved context to OpenAI and return the answer.
+    Send the question + retrieved context to Gemini and return the answer.
 
     history: list of {"role": "user"|"assistant", "content": str}
     """
-    client = OpenAI(api_key=api_key)
+    genai.configure(api_key=api_key)
 
     system_prompt = (
         "You are a helpful AI assistant that answers questions based on the provided document context.\n"
@@ -170,14 +170,20 @@ def ask_openai(api_key: str, context: str, question: str, history: list) -> str:
         f"Context from documents:\n{context}"
     )
 
-    # Build messages: system + prior history + current question
-    messages = [{"role": "system", "content": system_prompt}]
-    messages.extend(history)
-    messages.append({"role": "user", "content": question})
-
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        max_tokens=1024,
-        messages=messages
+    llm = genai.GenerativeModel(
+        model_name="gemini-3.1-flash-lite-preview",
+        system_instruction=system_prompt
     )
-    return response.choices[0].message.content
+
+    # Convert history to Gemini format (role "assistant" -> "model")
+    gemini_history = []
+    for msg in history:
+        role = "model" if msg["role"] == "assistant" else "user"
+        gemini_history.append({"role": role, "parts": [msg["content"]]})
+
+    chat = llm.start_chat(history=gemini_history)
+    response = chat.send_message(
+        question,
+        generation_config=genai.GenerationConfig(max_output_tokens=1024)
+    )
+    return response.text
