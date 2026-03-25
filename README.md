@@ -14,7 +14,7 @@ Upload Document
 Ask a Question
     → Convert question to embedding
     → Find most similar chunks in ChromaDB
-    → Send chunks as context to Claude (LLM)
+    → Send chunks as context to GPT-4o-mini (LLM)
     → Display grounded answer with source citations
 ```
 
@@ -25,7 +25,7 @@ Ask a Question
 | User Interface | Streamlit |
 | Vector Database | ChromaDB |
 | Embedding Model | sentence-transformers (`all-MiniLM-L6-v2`) |
-| Language Model | Claude (Anthropic API) |
+| Language Model | GPT-4o-mini (OpenAI API) |
 | PDF Parsing | PyPDF2 |
 
 ## Setup & Run
@@ -38,7 +38,7 @@ pip install -r requirements.txt
 **2. Set your API key**
 ```bash
 cp .env.example .env
-# Edit .env and add your Anthropic API key
+# Edit .env and add your OPENAI_API_KEY
 ```
 
 **3. Run the app**
@@ -50,7 +50,7 @@ The app opens at `http://localhost:8501` in your browser.
 
 ## Usage
 
-1. Enter your Anthropic API key in the sidebar (or set it in `.env`)
+1. Enter your OpenAI API key in the sidebar (or set it in `.env`)
 2. Upload a PDF or TXT file using the sidebar uploader
 3. Click **Index Document** to process it
 4. Type your question in the chat box
@@ -72,5 +72,5 @@ rag-agent-mini-project/
 - **Document Chunking**: Long documents are split into 500-character overlapping chunks for better retrieval
 - **Vector Embeddings**: Text is converted to numerical vectors so semantic similarity can be measured
 - **Similarity Search**: ChromaDB finds the most relevant chunks using cosine distance
-- **Prompt Engineering**: Retrieved chunks are injected into Claude's context to produce accurate, grounded answers
-- **RAG Architecture**: Combines retrieval (ChromaDB) with generation (Claude) to reduce hallucinations
+- **Prompt Engineering**: Retrieved chunks are injected into GPT-4o-mini's context to produce accurate, grounded answers
+- **RAG Architecture**: Combines retrieval (ChromaDB) with generation (GPT-4o-mini) to reduce hallucinations
