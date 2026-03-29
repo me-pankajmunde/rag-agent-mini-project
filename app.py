@@ -202,7 +202,6 @@ with gr.Blocks(title="RAG AI Assistant") as demo:
                 label="RAG Chat",
                 height=520,
                 type="messages",
-                show_copy_button=True,
             )
             msg_input = gr.Textbox(
                 label="Ask a question about your documents...",
