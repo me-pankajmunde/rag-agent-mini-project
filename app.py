@@ -4,24 +4,17 @@ A simple Retrieval-Augmented Generation system for document Q&A.
 """
 
 import os
-import tempfile
-import streamlit as st
+import gradio as gr
 from dotenv import load_dotenv
 import rag_engine
 
 # Load environment variables from .env file
 load_dotenv()
 
-# ── Page Configuration ────────────────────────────────────────────────────────
+# ── Global Resources (loaded once at startup) ─────────────────────────────────
 
-st.set_page_config(
-    page_title="RAG AI Assistant",
-    page_icon="📚",
-    layout="wide"
-)
-
-st.title("📚 RAG AI Assistant")
-st.caption("Upload documents and ask questions — answers are grounded in your files.")
+model = rag_engine.get_embedding_model()
+collection = rag_engine.get_vector_db()
 
 
 def distance_to_confidence(distance: float) -> str:
@@ -32,195 +25,222 @@ def distance_to_confidence(distance: float) -> str:
         return "Medium"
     return "Low"
 
-# ── Cached Resources (loaded once, not on every click) ────────────────────────
 
-@st.cache_resource
-def load_model():
-    """Load the embedding model once."""
-    with st.spinner("Loading embedding model for the first time..."):
-        return rag_engine.get_embedding_model()
+# ── Helper ────────────────────────────────────────────────────────────────────
 
-@st.cache_resource
-def load_db():
-    """Connect to ChromaDB once."""
-    return rag_engine.get_vector_db()
-
-model = load_model()
-collection = load_db()
-
-# ── Session State ─────────────────────────────────────────────────────────────
-
-if "messages" not in st.session_state:
-    st.session_state.messages = []  # list of {"role": ..., "content": ...}
-
-# ── Sidebar ───────────────────────────────────────────────────────────────────
-
-with st.sidebar:
-    st.header("Upload Documents")
-
-    st.subheader("RAG Settings")
-    top_k = st.slider(
-        "Top-K Retrieval",
-        min_value=1,
-        max_value=10,
-        value=5,
-        help="Number of most relevant chunks retrieved for each question"
-    )
-    chunk_size = st.slider(
-        "Chunk Size",
-        min_value=200,
-        max_value=1000,
-        value=500,
-        step=50,
-        help="Number of characters per chunk during indexing"
-    )
-    max_overlap = max(20, chunk_size // 2)
-    overlap = st.slider(
-        "Chunk Overlap",
-        min_value=20,
-        max_value=max_overlap,
-        value=min(50, max_overlap),
-        step=10,
-        help="Overlap between consecutive chunks during indexing"
-    )
-
-    api_key = os.getenv("GEMINI_API_KEY", "")
-    if not api_key:
-        api_key = st.text_input("Gemini API Key", type="password",
-                                help="Get your key from aistudio.google.com")
-        if api_key:
-            os.environ["GEMINI_API_KEY"] = api_key
-
-    uploaded_file = st.file_uploader(
-        "Choose a PDF or TXT file",
-        type=["pdf", "txt"],
-        help="Upload a document to ask questions about"
-    )
-
-    if uploaded_file is not None:
-        if st.button("Index Document", type="primary"):
-            with st.spinner(f"Processing {uploaded_file.name}..."):
-                # Save to a temp file so we can read it
-                suffix = os.path.splitext(uploaded_file.name)[1]
-                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-                    tmp.write(uploaded_file.read())
-                    tmp_path = tmp.name
-
-                try:
-                    text = rag_engine.load_document(tmp_path)
-                    if not text:
-                        st.error("Could not extract text from the file.")
-                    else:
-                        chunks = rag_engine.chunk_text(text, chunk_size=chunk_size, overlap=overlap)
-                        count = rag_engine.add_document(collection, model, chunks, uploaded_file.name)
-                        st.success(
-                            f"Indexed {count} chunks from **{uploaded_file.name}** "
-                            f"(chunk_size={chunk_size}, overlap={overlap})"
-                        )
-                except Exception as e:
-                    st.error(f"Error: {e}")
-                finally:
-                    os.unlink(tmp_path)  # clean up temp file
-
-    st.divider()
-
-    # Show indexed documents
-    st.subheader("Indexed Documents")
+def get_indexed_docs_text() -> str:
+    """Return a formatted markdown string of indexed documents."""
     docs = rag_engine.list_indexed_documents(collection)
     if docs:
-        for doc in docs:
-            st.write(f"- {doc}")
-        st.caption(f"Total chunks in DB: {collection.count()}")
+        doc_list = "\n".join(f"- {doc}" for doc in docs)
+        total = collection.count()
+        return f"{doc_list}\n\n*Total chunks in DB: {total}*"
+    return "No documents indexed yet. Upload a file above."
 
-        if st.button("Clear Indexed Data"):
-            deleted = rag_engine.clear_indexed_documents(collection)
-            st.session_state.messages = []
-            st.success(f"Cleared {deleted} indexed chunks and reset chat history.")
-    else:
-        st.info("No documents indexed yet. Upload a file above.")
 
-    st.divider()
-    st.caption("Built with Streamlit + ChromaDB + Gemini")
+# ── Event Handlers ────────────────────────────────────────────────────────────
 
-# ── Main Chat Area ────────────────────────────────────────────────────────────
+def update_overlap_max(chunk_size: int):
+    """Dynamically cap the overlap slider when chunk size changes."""
+    max_overlap = max(20, chunk_size // 2)
+    return gr.update(maximum=max_overlap, value=min(50, max_overlap))
 
-# Display conversation history
-for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
-        if "sources" in msg:
-            with st.expander("Sources used"):
-                for src in msg["sources"]:
-                    confidence = distance_to_confidence(src["distance"])
-                    st.caption(
-                        f"**{src['source']}** | Confidence: **{confidence}** | Distance: {src['distance']}\n\n"
-                        f"{src['text'][:300]}..."
-                    )
 
-# Chat input
-question = st.chat_input("Ask a question about your documents...")
+def index_document(file, chunk_size: int, overlap: int, api_key_input: str):
+    """Index the uploaded document into ChromaDB."""
+    if file is None:
+        return "No file uploaded.", get_indexed_docs_text()
 
-if question:
-    # Validate prerequisites
-    api_key = os.getenv("GEMINI_API_KEY", "")
+    api_key = os.getenv("GEMINI_API_KEY", "") or api_key_input
+    if api_key:
+        os.environ["GEMINI_API_KEY"] = api_key
+
+    try:
+        text = rag_engine.load_document(file.name)
+        if not text:
+            return "Could not extract text from the file.", get_indexed_docs_text()
+
+        chunks = rag_engine.chunk_text(text, chunk_size=chunk_size, overlap=overlap)
+        doc_name = os.path.basename(file.name)
+        count = rag_engine.add_document(collection, model, chunks, doc_name)
+        return (
+            f"Indexed **{count}** chunks from **{doc_name}** "
+            f"(chunk_size={chunk_size}, overlap={overlap})",
+            get_indexed_docs_text(),
+        )
+    except Exception as e:
+        return f"Error: {e}", get_indexed_docs_text()
+
+
+def clear_data():
+    """Delete all indexed documents and reset the chat."""
+    deleted = rag_engine.clear_indexed_documents(collection)
+    return f"Cleared **{deleted}** indexed chunks and reset chat history.", get_indexed_docs_text(), []
+
+
+def chat(message: str, history: list, top_k: int, api_key_input: str):
+    """Handle a chat message and stream the response."""
+    api_key = os.getenv("GEMINI_API_KEY", "") or api_key_input
     if not api_key:
-        st.error("Please enter your Gemini API key in the sidebar.")
-        st.stop()
+        yield history + [
+            {"role": "user", "content": message},
+            {"role": "assistant", "content": "Please enter your Gemini API key in the sidebar."},
+        ]
+        return
+
+    os.environ["GEMINI_API_KEY"] = api_key
 
     if collection.count() == 0:
-        st.warning("Please upload and index at least one document first.")
-        st.stop()
+        yield history + [
+            {"role": "user", "content": message},
+            {"role": "assistant", "content": "Please upload and index at least one document first."},
+        ]
+        return
 
-    # Show user message
-    with st.chat_message("user"):
-        st.markdown(question)
-    st.session_state.messages.append({"role": "user", "content": question})
+    chunks = rag_engine.search_similar(collection, model, message, n_results=top_k)
 
-    # Retrieve relevant chunks
-    with st.spinner("Searching documents..."):
-        chunks = rag_engine.search_similar(collection, model, question, n_results=top_k)
+    new_history = history + [{"role": "user", "content": message}]
 
-    if chunks:
-        # Format context for Gemini
-        context_parts = []
-        for i, chunk in enumerate(chunks, 1):
-            context_parts.append(f"[{i}. From: {chunk['source']}]\n{chunk['text']}")
-        context = "\n\n".join(context_parts)
+    if not chunks:
+        yield new_history + [
+            {
+                "role": "assistant",
+                "content": "I couldn't find relevant information in the indexed documents for that question.",
+            }
+        ]
+        return
 
-        # Build history for multi-turn (exclude source metadata)
-        history = [{"role": m["role"], "content": m["content"]}
-                   for m in st.session_state.messages[:-1]]  # exclude current question
+    context_parts = [f"[{i}. From: {c['source']}]\n{c['text']}" for i, c in enumerate(chunks, 1)]
+    context = "\n\n".join(context_parts)
 
-        sources = chunks
-    else:
-        context = ""
-        history = []
-        sources = []
+    rag_history = [{"role": m["role"], "content": m["content"]} for m in history]
 
-    # Show assistant response
-    with st.chat_message("assistant"):
-        if not chunks:
-            answer = "I couldn't find relevant information in the indexed documents for that question."
-            st.markdown(answer)
-        else:
-            try:
-                answer = st.write_stream(
-                    rag_engine.ask_gemini_stream(api_key, context, question, history)
-                )
-            except Exception as e:
-                answer = f"Error calling Gemini API: {e}"
-                st.markdown(answer)
-        if sources:
-            with st.expander("Sources used"):
-                for src in sources:
-                    confidence = distance_to_confidence(src["distance"])
-                    st.caption(
-                        f"**{src['source']}** | Confidence: **{confidence}** | Distance: {src['distance']}\n\n"
-                        f"{src['text'][:300]}..."
-                    )
+    answer = ""
+    try:
+        for text_chunk in rag_engine.ask_gemini_stream(api_key, context, message, rag_history):
+            answer += text_chunk
+            yield new_history + [{"role": "assistant", "content": answer}]
+    except Exception as e:
+        answer = f"Error calling Gemini API: {e}"
+        yield new_history + [{"role": "assistant", "content": answer}]
+        return
 
-    st.session_state.messages.append({
-        "role": "assistant",
-        "content": answer,
-        "sources": sources
-    })
+    # Append sources below the answer
+    sources_md = "\n\n---\n**Sources used:**\n"
+    for src in chunks:
+        confidence = distance_to_confidence(src["distance"])
+        sources_md += (
+            f"\n**{src['source']}** | Confidence: **{confidence}** | Distance: {src['distance']}\n\n"
+            f"{src['text'][:300]}...\n"
+        )
+    yield new_history + [{"role": "assistant", "content": answer + sources_md}]
+
+
+def submit_message(message: str, history: list, top_k: int, api_key_input: str):
+    """Wrapper so the text box is cleared after submission."""
+    if not message.strip():
+        yield history
+        return
+    for updated_history in chat(message, history, top_k, api_key_input):
+        yield updated_history
+
+
+# ── UI Layout ─────────────────────────────────────────────────────────────────
+
+with gr.Blocks(title="RAG AI Assistant") as demo:
+    gr.Markdown("# RAG AI Assistant\nUpload documents and ask questions — answers are grounded in your files.")
+
+    with gr.Row():
+        # ── Left panel ────────────────────────────────────────────────────────
+        with gr.Column(scale=1, min_width=280):
+            gr.Markdown("## Upload Documents")
+
+            gr.Markdown("### RAG Settings")
+            top_k = gr.Slider(
+                minimum=1, maximum=10, value=5, step=1,
+                label="Top-K Retrieval",
+                info="Number of most relevant chunks retrieved for each question",
+            )
+            chunk_size = gr.Slider(
+                minimum=200, maximum=1000, value=500, step=50,
+                label="Chunk Size",
+                info="Number of characters per chunk during indexing",
+            )
+            overlap = gr.Slider(
+                minimum=20, maximum=250, value=50, step=10,
+                label="Chunk Overlap",
+                info="Overlap between consecutive chunks during indexing",
+            )
+
+            env_key = os.getenv("GEMINI_API_KEY", "")
+            api_key_input = gr.Textbox(
+                label="Gemini API Key",
+                type="password",
+                placeholder="Get your key from aistudio.google.com",
+                value=env_key,
+                visible=not bool(env_key),
+            )
+
+            file_upload = gr.File(
+                label="Choose a PDF or TXT file",
+                file_types=[".pdf", ".txt"],
+            )
+            index_btn = gr.Button("Index Document", variant="primary")
+            index_status = gr.Markdown("")
+
+            gr.Markdown("---")
+            gr.Markdown("### Indexed Documents")
+            docs_display = gr.Markdown(get_indexed_docs_text())
+            clear_btn = gr.Button("Clear Indexed Data", variant="stop")
+
+            gr.Markdown("---")
+            gr.Markdown("*Built with Gradio + ChromaDB + Gemini*")
+
+        # ── Right panel (chat) ────────────────────────────────────────────────
+        with gr.Column(scale=2):
+            chatbot = gr.Chatbot(
+                label="RAG Chat",
+                height=520,
+                type="messages",
+            )
+            msg_input = gr.Textbox(
+                label="Ask a question about your documents...",
+                placeholder="Type your question and press Enter or click Send",
+                lines=2,
+            )
+            with gr.Row():
+                send_btn = gr.Button("Send", variant="primary")
+                clear_chat_btn = gr.Button("Clear Chat")
+
+    # ── Wire up events ────────────────────────────────────────────────────────
+
+    chunk_size.change(fn=update_overlap_max, inputs=[chunk_size], outputs=[overlap])
+
+    index_btn.click(
+        fn=index_document,
+        inputs=[file_upload, chunk_size, overlap, api_key_input],
+        outputs=[index_status, docs_display],
+    )
+
+    clear_btn.click(
+        fn=clear_data,
+        outputs=[index_status, docs_display, chatbot],
+    )
+
+    send_btn.click(
+        fn=submit_message,
+        inputs=[msg_input, chatbot, top_k, api_key_input],
+        outputs=[chatbot],
+    ).then(fn=lambda: "", outputs=[msg_input])
+
+    msg_input.submit(
+        fn=submit_message,
+        inputs=[msg_input, chatbot, top_k, api_key_input],
+        outputs=[chatbot],
+    ).then(fn=lambda: "", outputs=[msg_input])
+
+    clear_chat_btn.click(fn=lambda: [], outputs=[chatbot])
+
+
+if __name__ == "__main__":
+    demo.launch()
