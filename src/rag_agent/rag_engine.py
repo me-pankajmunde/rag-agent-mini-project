@@ -83,7 +83,7 @@ def embed_texts(model, texts: list) -> list:
 
 # ── Vector Database ───────────────────────────────────────────────────────────
 
-def get_vector_db(persist_dir: str = "./chroma_db"):
+def get_vector_db(persist_dir: str = "./data/chroma_db"):
     """Connect to (or create) the ChromaDB collection."""
     os.makedirs(persist_dir, exist_ok=True)
     client = chromadb.PersistentClient(path=persist_dir)

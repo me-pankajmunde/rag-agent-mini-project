@@ -6,7 +6,11 @@ A simple Retrieval-Augmented Generation system for document Q&A.
 import os
 import gradio as gr
 from dotenv import load_dotenv
-import rag_engine
+
+try:
+    from . import rag_engine
+except ImportError:
+    import rag_engine
 
 # Load environment variables from .env file
 load_dotenv()

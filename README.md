@@ -1,115 +1,91 @@
 # RAG-Based AI Assistant
 
-A simple **Retrieval-Augmented Generation (RAG)** system that lets you upload documents (PDFs or text files) and ask questions about them. Answers are grounded in your documents — not hallucinated.
+A lightweight Retrieval-Augmented Generation (RAG) application for document Q&A. Upload PDF or TXT files, index them into ChromaDB, and ask grounded questions through a Gradio interface.
 
-## How It Works
+## Features
 
-```
-Upload Document
-    → Extract text from PDF/TXT
-    → Split into chunks (500 chars each)
-    → Convert to embeddings (all-MiniLM-L6-v2)
-    → Store in ChromaDB (vector database)
-
-Ask a Question
-    → Convert question to embedding
-    → Find most similar chunks in ChromaDB
-    → Send chunks as context to Gemini (LLM)
-    → Display grounded answer with source citations
-```
+- PDF and TXT ingestion
+- Configurable chunk size, overlap, and top-k retrieval
+- Semantic retrieval using `all-MiniLM-L6-v2` embeddings
+- OpenAI chat-completions streaming responses
+- Source snippets with confidence labels
 
 ## Tech Stack
 
 | Component | Technology |
-|-----------|-----------|
-| User Interface | Streamlit |
-| Vector Database | ChromaDB |
-| Embedding Model | sentence-transformers (`all-MiniLM-L6-v2`) |
-| Language Model | Gemini (Google Generative AI API) |
-| PDF Parsing | PyPDF2 |
+|---|---|
+| UI | Gradio |
+| Vector DB | ChromaDB |
+| Embeddings | sentence-transformers (`all-MiniLM-L6-v2`) |
+| LLM API | OpenAI (`gpt-4o` default, configurable) |
+| Document Parsing | PyPDF2 |
 
-## Setup & Run
+## Standard Project Structure
 
-**1. Install dependencies**
+```
+rag-agent-mini-project/
+├── data/
+│   └── chroma_db/            # Persistent vector store
+├── docs/
+│   └── PROJECT_REPORT.md
+├── src/
+│   └── rag_agent/
+│       ├── __init__.py
+│       ├── app.py            # Gradio application
+│       └── rag_engine.py     # RAG core logic
+├── tests/
+├── .env.example
+├── README.md
+├── requirements.txt
+└── SETUP_GUIDE.md
+```
+
+## Setup
+
+1. Create and activate a virtual environment.
+2. Install dependencies:
+
 ```bash
 pip install -r requirements.txt
 ```
 
-**2. Set your API key**
+3. Configure environment variables:
+
 ```bash
 cp .env.example .env
-# Edit .env and add your GEMINI_API_KEY
 ```
 
-Optional model override:
+Set at least:
+
+```env
+OPENAI_API_KEY=your_api_key
+```
+
+Optional:
+
+```env
+OPENAI_MODEL=gpt-4o
+```
+
+## Run
+
+Run from the repository root:
+
 ```bash
-# Stable default in code is gemini-2.0-flash
-GEMINI_MODEL=gemini-2.0-flash
+PYTHONPATH=src python -m rag_agent.app
 ```
 
-**3. Run the app**
-```bash
-streamlit run app.py
-```
-
-The app opens at `http://localhost:8501` in your browser.
+The Gradio app starts on a local URL shown in terminal output.
 
 ## Usage
 
-1. Enter your Gemini API key in the sidebar (or set it in `.env`)
-2. (Optional) Adjust **Top-K Retrieval**, **Chunk Size**, and **Chunk Overlap** in the sidebar
-3. Upload a PDF or TXT file using the sidebar uploader
-4. Click **Index Document** to process it
-5. Type your question in the chat box
-6. The assistant will answer using only the content from your documents
+1. Enter your OpenAI API key in the sidebar if not set in `.env`.
+2. Upload a PDF or TXT document.
+3. Click Index Document.
+4. Ask questions in the chat panel.
+5. Review the source snippets shown with each answer.
 
-## Project Structure
+## Notes
 
-```
-rag-agent-mini-project/
-├── app.py           # Streamlit user interface
-├── rag_engine.py    # Core RAG logic (load, chunk, embed, search, answer)
-├── requirements.txt
-├── .env.example     # Template for API key
-└── README.md
-```
-
-## Key Concepts Demonstrated
-
-- **Document Chunking**: Long documents are split into 500-character overlapping chunks for better retrieval
-- **Vector Embeddings**: Text is converted to numerical vectors so semantic similarity can be measured
-- **Similarity Search**: ChromaDB finds the most relevant chunks using cosine distance
-- **Prompt Engineering**: Retrieved chunks are injected into Gemini's context to produce accurate, grounded answers
-- **RAG Architecture**: Combines retrieval (ChromaDB) with generation (Gemini) to reduce hallucinations
-
-## Evaluation (Final Year Project)
-
-Use this section during demo/viva to show measurable performance.
-
-### Suggested Test Setup
-
-- Prepare 2-3 documents (course notes, technical report, policy PDF)
-- Create 15-20 questions:
-    - 40% factual (direct answer present in one chunk)
-    - 40% multi-sentence (requires combining nearby context)
-    - 20% out-of-context (answer not present in documents)
-
-### Metrics to Report
-
-- **Retrieval Hit@5**: Did at least one returned chunk contain the correct evidence?
-- **Answer Groundedness**: Did the answer stay within retrieved context?
-- **Source Quality**: Were cited source chunks relevant and interpretable?
-- **Failure Handling**: For out-of-context questions, did the system clearly say information was unavailable?
-
-### Simple Scoring Rubric
-
-For each question, score 0-2:
-
-- **2** = Correct and clearly grounded in source
-- **1** = Partially correct or weak grounding
-- **0** = Incorrect or hallucinated
-
-Report final score as:
-
-- `Total Score / (2 × Number of Questions)`
-- Plus `%` of questions with correct retrieval evidence (Hit@5)
+- Vector data is now persisted under `data/chroma_db`.
+- Existing indexed data from earlier layout has been moved into this directory.
