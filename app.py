@@ -51,9 +51,9 @@ def index_document(file, chunk_size: int, overlap: int, api_key_input: str):
     if file is None:
         return "No file uploaded.", get_indexed_docs_text()
 
-    api_key = os.getenv("GEMINI_API_KEY", "") or api_key_input
+    api_key = os.getenv("OPENAI_API_KEY", "") or api_key_input
     if api_key:
-        os.environ["GEMINI_API_KEY"] = api_key
+        os.environ["OPENAI_API_KEY"] = api_key
 
     try:
         text = rag_engine.load_document(file.name)
@@ -80,15 +80,15 @@ def clear_data():
 
 def chat(message: str, history: list, top_k: int, api_key_input: str):
     """Handle a chat message and stream the response."""
-    api_key = os.getenv("GEMINI_API_KEY", "") or api_key_input
+    api_key = os.getenv("OPENAI_API_KEY", "") or api_key_input
     if not api_key:
         yield history + [
             {"role": "user", "content": message},
-            {"role": "assistant", "content": "Please enter your Gemini API key in the sidebar."},
+            {"role": "assistant", "content": "Please enter your OpenAI API key in the sidebar."},
         ]
         return
 
-    os.environ["GEMINI_API_KEY"] = api_key
+    os.environ["OPENAI_API_KEY"] = api_key
 
     if collection.count() == 0:
         yield history + [
@@ -117,7 +117,7 @@ def chat(message: str, history: list, top_k: int, api_key_input: str):
 
     answer = ""
     try:
-        for text_chunk in rag_engine.ask_gemini_stream(api_key, context, message, rag_history):
+        for text_chunk in rag_engine.ask_openai_stream(api_key, context, message, rag_history):
             answer += text_chunk
             yield new_history + [{"role": "assistant", "content": answer}]
     except Exception as e:
@@ -172,11 +172,11 @@ with gr.Blocks(title="RAG AI Assistant") as demo:
                 info="Overlap between consecutive chunks during indexing",
             )
 
-            env_key = os.getenv("GEMINI_API_KEY", "")
+            env_key = os.getenv("OPENAI_API_KEY", "")
             api_key_input = gr.Textbox(
-                label="Gemini API Key",
+                label="OpenAI API Key",
                 type="password",
-                placeholder="Get your key from aistudio.google.com",
+                placeholder="Get your key from platform.openai.com",
                 value=env_key,
                 visible=not bool(env_key),
             )
@@ -194,7 +194,7 @@ with gr.Blocks(title="RAG AI Assistant") as demo:
             clear_btn = gr.Button("Clear Indexed Data", variant="stop")
 
             gr.Markdown("---")
-            gr.Markdown("*Built with Gradio + ChromaDB + Gemini*")
+            gr.Markdown("*Built with Gradio + ChromaDB + OpenAI*")
 
         # ── Right panel (chat) ────────────────────────────────────────────────
         with gr.Column(scale=2):

@@ -7,15 +7,15 @@ import uuid
 import chromadb
 import PyPDF2
 from sentence_transformers import SentenceTransformer
-import google.generativeai as genai
+from openai import OpenAI
 
 
-DEFAULT_GEMINI_MODEL = "gemini-2.0-flash"
+DEFAULT_OPENAI_MODEL = "gpt-4o"
 
 
-def get_gemini_model_name() -> str:
-    """Return Gemini model name from env or default stable model."""
-    return os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
+def get_openai_model_name() -> str:
+    """Return OpenAI model name from env or default."""
+    return os.getenv("OPENAI_MODEL", DEFAULT_OPENAI_MODEL)
 
 
 # ── Document Loading ──────────────────────────────────────────────────────────
@@ -173,74 +173,54 @@ def clear_indexed_documents(collection) -> int:
     return len(ids)
 
 
-# ── LLM (Gemini) ─────────────────────────────────────────────────────────────
+# ── LLM (OpenAI) ─────────────────────────────────────────────────────────────
 
-def ask_gemini(api_key: str, context: str, question: str, history: list) -> str:
+def _build_messages(context: str, question: str, history: list) -> list:
+    """Build the OpenAI messages list from context, history, and the current question."""
+    system_prompt = (
+        "You are a helpful AI assistant that answers questions based on the provided document context.\n"
+        "Use ONLY the information given in the context to answer the question.\n"
+        "If the context does not contain enough information, say so clearly.\n"
+        "Always mention which document your answer comes from when possible.\n\n"
+        f"Context from documents:\n{context}"
+    )
+    messages = [{"role": "system", "content": system_prompt}]
+    for msg in history:
+        messages.append({"role": msg["role"], "content": msg["content"]})
+    messages.append({"role": "user", "content": question})
+    return messages
+
+
+def ask_openai(api_key: str, context: str, question: str, history: list) -> str:
     """
-    Send the question + retrieved context to Gemini and return the answer.
+    Send the question + retrieved context to OpenAI and return the answer.
 
     history: list of {"role": "user"|"assistant", "content": str}
     """
-    genai.configure(api_key=api_key)
-
-    system_prompt = (
-        "You are a helpful AI assistant that answers questions based on the provided document context.\n"
-        "Use ONLY the information given in the context to answer the question.\n"
-        "If the context does not contain enough information, say so clearly.\n"
-        "Always mention which document your answer comes from when possible.\n\n"
-        f"Context from documents:\n{context}"
+    client = OpenAI(api_key=api_key)
+    messages = _build_messages(context, question, history)
+    response = client.chat.completions.create(
+        model=get_openai_model_name(),
+        messages=messages,
+        max_tokens=1024,
     )
-
-    llm = genai.GenerativeModel(
-        model_name=get_gemini_model_name(),
-        system_instruction=system_prompt
-    )
-
-    # Convert history to Gemini format (role "assistant" -> "model")
-    gemini_history = []
-    for msg in history:
-        role = "model" if msg["role"] == "assistant" else "user"
-        gemini_history.append({"role": role, "parts": [msg["content"]]})
-
-    chat = llm.start_chat(history=gemini_history)
-    response = chat.send_message(
-        question,
-        generation_config=genai.GenerationConfig(max_output_tokens=1024)
-    )
-    return response.text
+    return response.choices[0].message.content
 
 
-def ask_gemini_stream(api_key: str, context: str, question: str, history: list):
+def ask_openai_stream(api_key: str, context: str, question: str, history: list):
     """
-    Send the question + retrieved context to Gemini and stream the answer.
+    Send the question + retrieved context to OpenAI and stream the answer.
     Yields text chunks as they arrive.
     """
-    genai.configure(api_key=api_key)
-
-    system_prompt = (
-        "You are a helpful AI assistant that answers questions based on the provided document context.\n"
-        "Use ONLY the information given in the context to answer the question.\n"
-        "If the context does not contain enough information, say so clearly.\n"
-        "Always mention which document your answer comes from when possible.\n\n"
-        f"Context from documents:\n{context}"
-    )
-
-    llm = genai.GenerativeModel(
-        model_name=get_gemini_model_name(),
-        system_instruction=system_prompt
-    )
-
-    gemini_history = []
-    for msg in history:
-        role = "model" if msg["role"] == "assistant" else "user"
-        gemini_history.append({"role": role, "parts": [msg["content"]]})
-
-    chat = llm.start_chat(history=gemini_history)
-    response = chat.send_message(
-        question,
+    client = OpenAI(api_key=api_key)
+    messages = _build_messages(context, question, history)
+    stream = client.chat.completions.create(
+        model=get_openai_model_name(),
+        messages=messages,
+        max_tokens=1024,
         stream=True,
-        generation_config=genai.GenerationConfig(max_output_tokens=1024)
     )
-    for chunk in response:
-        if chunk.text:
-            yield chunk.text
+    for chunk in stream:
+        text = chunk.choices[0].delta.content
+        if text:
+            yield text
