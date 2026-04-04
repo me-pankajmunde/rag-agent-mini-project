@@ -42,11 +42,23 @@ rag-agent-mini-project/
 
 ## Setup
 
-1. Create and activate a virtual environment.
+1. Create and activate a virtual environment:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
 2. Install dependencies:
 
 ```bash
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
+```
+
+If your environment blocks installs with an "externally managed environment" error (PEP 668), use:
+
+```bash
+python3 -m pip install --break-system-packages -r requirements.txt
 ```
 
 3. Configure environment variables:
@@ -72,7 +84,7 @@ OPENAI_MODEL=gpt-4o
 Run from the repository root:
 
 ```bash
-PYTHONPATH=src python -m rag_agent.app
+PYTHONPATH=src python3 -m rag_agent.app
 ```
 
 The Gradio app starts on a local URL shown in terminal output.

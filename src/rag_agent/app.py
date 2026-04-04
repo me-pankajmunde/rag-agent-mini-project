@@ -1,28 +1,76 @@
 """
-RAG-Based AI Assistant
-A simple Retrieval-Augmented Generation system for document Q&A.
+RAG-Based AI Assistant – Streamlit UI
 """
 
 import os
-import gradio as gr
+import sys
+import tempfile
+import streamlit as st
 from dotenv import load_dotenv
 
+# Support both `streamlit run src/rag_agent/app.py` and `python -m rag_agent.app`
 try:
     from . import rag_engine
 except ImportError:
-    import rag_engine
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+    from rag_agent import rag_engine
 
-# Load environment variables from .env file
 load_dotenv()
 
-# ── Global Resources (loaded once at startup) ─────────────────────────────────
+# ── Page config (must be the very first Streamlit call) ───────────────────────
 
-model = rag_engine.get_embedding_model()
-collection = rag_engine.get_vector_db()
+st.set_page_config(
+    page_title="RAG AI Assistant",
+    page_icon="📚",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
+
+# ── Hide Streamlit chrome ─────────────────────────────────────────────────────
+
+st.markdown("""
+<style>
+#MainMenu, footer, header { visibility: hidden; }
+.block-container { padding-top: 1rem !important; max-width: 100% !important; }
+</style>
+""", unsafe_allow_html=True)
+
+# ── Cached resources (initialised once per process) ───────────────────────────
+
+@st.cache_resource(show_spinner="Loading embedding model…")
+def _load_model():
+    return rag_engine.get_embedding_model()
 
 
-def distance_to_confidence(distance: float) -> str:
-    """Map vector distance to a simple confidence label for demo readability."""
+@st.cache_resource(show_spinner="Connecting to vector DB…")
+def _load_collection():
+    return rag_engine.get_vector_db()
+
+
+model = _load_model()
+collection = _load_collection()
+
+# ── Session-state defaults ────────────────────────────────────────────────────
+
+_DEFAULTS: dict = {
+    "chat_history":        [],
+    "sources_html":        "",
+    "preview_doc":         None,
+    "active_doc":          None,   # doc currently scoping retrieval
+    "preview_excerpt":     "",
+    "preview_chunk_count": 0,
+    "preview_word_count":  0,
+    "preview_char_count":  0,
+    "preview_chunks_md":   "",
+    "index_status":        None,   # {"type": "success"|"error"|"warning", "msg": str}
+}
+for _k, _v in _DEFAULTS.items():
+    if _k not in st.session_state:
+        st.session_state[_k] = _v
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _confidence(distance: float) -> str:
     if distance <= 0.25:
         return "High"
     if distance <= 0.45:
@@ -30,221 +78,270 @@ def distance_to_confidence(distance: float) -> str:
     return "Low"
 
 
-# ── Helper ────────────────────────────────────────────────────────────────────
+def _build_sources_md(chunks: list) -> str:
+    if not chunks:
+        return ""
+    parts = []
+    for i, src in enumerate(chunks, 1):
+        conf = _confidence(src["distance"])
+        dot  = {"High": "🟢", "Medium": "🟡", "Low": "🔴"}.get(conf, "")
+        snippet = src["text"][:400] + ("…" if len(src["text"]) > 400 else "")
+        parts.append(
+            f"**Source {i} — {src['source']}**  \n"
+            f"{dot} Confidence: **{conf}** · Distance: `{src['distance']}`\n\n"
+            f"{snippet}"
+        )
+    return "\n\n---\n\n".join(parts)
 
-def get_indexed_docs_text() -> str:
-    """Return a formatted markdown string of indexed documents."""
+
+def _build_chunk_samples_md(chunks: list) -> str:
+    if not chunks:
+        return ""
+    parts = []
+    for i, c in enumerate(chunks[:3], 1):
+        preview = c[:350] + ("…" if len(c) > 350 else "")
+        parts.append(f"**Chunk {i}**\n\n> {preview}")
+    return "\n\n---\n\n".join(parts)
+
+
+def _set_preview(doc_name: str, excerpt: str, chunk_count: int,
+                 chunks_md: str, word_count: int = 0, char_count: int = 0):
+    st.session_state.preview_doc         = doc_name
+    st.session_state.preview_excerpt     = excerpt
+    st.session_state.preview_chunk_count = chunk_count
+    st.session_state.preview_word_count  = word_count
+    st.session_state.preview_char_count  = char_count
+    st.session_state.preview_chunks_md   = chunks_md
+
+
+def _load_preview_from_db(doc_name: str):
+    try:
+        data  = rag_engine.get_document_preview(collection, doc_name)
+        _set_preview(
+            doc_name,
+            excerpt     = data["excerpt"],
+            chunk_count = data["chunk_count"],
+            chunks_md   = _build_chunk_samples_md(data["sample_chunks"]),
+        )
+    except Exception as e:
+        _set_preview(doc_name, excerpt=f"Error loading preview: {e}", chunk_count=0, chunks_md="")
+
+
+# ── SIDEBAR ───────────────────────────────────────────────────────────────────
+
+with st.sidebar:
+
+    st.title("📚 RAG AI Assistant")
+    st.caption("Retrieval-Augmented Generation · Document Q&A")
+    st.divider()
+
+    # ── Configuration ──────────────────────────────────────────────────────────
+    st.subheader("⚙ Configuration")
+
+    top_k = st.slider("Top-K Retrieval", 1, 10, 5,
+                      help="Most relevant chunks retrieved per question.")
+    chunk_size = st.slider("Chunk Size", 200, 1000, 500, step=50,
+                           help="Characters per chunk during indexing.")
+    max_overlap = max(20, chunk_size // 2)
+    overlap = st.slider("Chunk Overlap", 20, max_overlap, min(50, max_overlap), step=10,
+                        help="Character overlap between consecutive chunks.")
+
+    env_key = os.getenv("OPENAI_API_KEY", "")
+    if not env_key:
+        api_key = st.text_input("OpenAI API Key", type="password",
+                                placeholder="sk-…  (platform.openai.com)",
+                                key="api_key_input")
+    else:
+        api_key = env_key
+
+    # ── Upload ──────────────────────────────────────────────────────────────────
+    st.divider()
+    st.subheader("📤 Upload Document")
+
+    uploaded_file = st.file_uploader(
+        "PDF or TXT", type=["pdf", "txt"], label_visibility="collapsed"
+    )
+
+    if st.button("Index Document", type="primary", use_container_width=True):
+        if uploaded_file is None:
+            st.session_state.index_status = {"type": "warning", "msg": "⚠️ No file selected."}
+        else:
+            resolved_key = os.getenv("OPENAI_API_KEY", "") or api_key
+            if resolved_key:
+                os.environ["OPENAI_API_KEY"] = resolved_key
+            try:
+                suffix = os.path.splitext(uploaded_file.name)[1]
+                tmp_path = None
+                try:
+                    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                        tmp.write(uploaded_file.getvalue())
+                        tmp_path = tmp.name
+                    text = rag_engine.load_document(tmp_path)
+                finally:
+                    if tmp_path and os.path.exists(tmp_path):
+                        os.unlink(tmp_path)
+
+                if not text:
+                    st.session_state.index_status = {
+                        "type": "error",
+                        "msg": "❌ Could not extract text from the file.",
+                    }
+                else:
+                    chunks = rag_engine.chunk_text(text, chunk_size=chunk_size, overlap=overlap)
+                    count  = rag_engine.add_document(collection, model, chunks, uploaded_file.name)
+                    _set_preview(
+                        uploaded_file.name,
+                        excerpt     = text[:1500].strip(),
+                        chunk_count = count,
+                        chunks_md   = _build_chunk_samples_md(chunks[:3]),
+                        word_count  = len(text.split()),
+                        char_count  = len(text),
+                    )
+                    st.session_state.index_status = {
+                        "type": "success",
+                        "msg": f"✅ Indexed **{count}** chunks from **{uploaded_file.name}**",
+                    }
+            except Exception as e:
+                st.session_state.index_status = {"type": "error", "msg": f"❌ {e}"}
+
+    if st.session_state.index_status:
+        s = st.session_state.index_status
+        if s["type"] == "success":
+            st.success(s["msg"])
+        elif s["type"] == "error":
+            st.error(s["msg"])
+        else:
+            st.warning(s["msg"])
+
+    # ── Indexed documents ───────────────────────────────────────────────────────
+    st.divider()
+    st.subheader("📚 Indexed Documents")
+
     docs = rag_engine.list_indexed_documents(collection)
     if docs:
-        doc_list = "\n".join(f"- {doc}" for doc in docs)
-        total = collection.count()
-        return f"{doc_list}\n\n*Total chunks in DB: {total}*"
-    return "No documents indexed yet. Upload a file above."
-
-
-# ── Event Handlers ────────────────────────────────────────────────────────────
-
-def update_overlap_max(chunk_size: int):
-    """Dynamically cap the overlap slider when chunk size changes."""
-    max_overlap = max(20, chunk_size // 2)
-    return gr.update(maximum=max_overlap, value=min(50, max_overlap))
-
-
-def index_document(file, chunk_size: int, overlap: int, api_key_input: str):
-    """Index the uploaded document into ChromaDB."""
-    if file is None:
-        return "No file uploaded.", get_indexed_docs_text()
-
-    api_key = os.getenv("OPENAI_API_KEY", "") or api_key_input
-    if api_key:
-        os.environ["OPENAI_API_KEY"] = api_key
-
-    try:
-        text = rag_engine.load_document(file.name)
-        if not text:
-            return "Could not extract text from the file.", get_indexed_docs_text()
-
-        chunks = rag_engine.chunk_text(text, chunk_size=chunk_size, overlap=overlap)
-        doc_name = os.path.basename(file.name)
-        count = rag_engine.add_document(collection, model, chunks, doc_name)
-        return (
-            f"Indexed **{count}** chunks from **{doc_name}** "
-            f"(chunk_size={chunk_size}, overlap={overlap})",
-            get_indexed_docs_text(),
+        selected_doc = st.radio(
+            "Select to preview",
+            options=docs,
+            label_visibility="collapsed",
+            key="doc_radio",
         )
-    except Exception as e:
-        return f"Error: {e}", get_indexed_docs_text()
+        # Load preview when selection changes
+        if selected_doc != st.session_state.preview_doc:
+            _load_preview_from_db(selected_doc)
 
+        # Switching the active doc clears chat so history isn't from the old scope
+        if selected_doc != st.session_state.active_doc:
+            st.session_state.active_doc = selected_doc
+            st.session_state.chat_history = []
+            st.session_state.sources_html = ""
 
-def clear_data():
-    """Delete all indexed documents and reset the chat."""
-    deleted = rag_engine.clear_indexed_documents(collection)
-    return f"Cleared **{deleted}** indexed chunks and reset chat history.", get_indexed_docs_text(), []
-
-
-def chat(message: str, history: list, top_k: int, api_key_input: str):
-    """Handle a chat message and stream the response."""
-    api_key = os.getenv("OPENAI_API_KEY", "") or api_key_input
-    if not api_key:
-        yield history + [
-            {"role": "user", "content": message},
-            {"role": "assistant", "content": "Please enter your OpenAI API key in the sidebar."},
-        ]
-        return
-
-    os.environ["OPENAI_API_KEY"] = api_key
-
-    if collection.count() == 0:
-        yield history + [
-            {"role": "user", "content": message},
-            {"role": "assistant", "content": "Please upload and index at least one document first."},
-        ]
-        return
-
-    chunks = rag_engine.search_similar(collection, model, message, n_results=top_k)
-
-    new_history = history + [{"role": "user", "content": message}]
-
-    if not chunks:
-        yield new_history + [
-            {
-                "role": "assistant",
-                "content": "I couldn't find relevant information in the indexed documents for that question.",
-            }
-        ]
-        return
-
-    context_parts = [f"[{i}. From: {c['source']}]\n{c['text']}" for i, c in enumerate(chunks, 1)]
-    context = "\n\n".join(context_parts)
-
-    rag_history = [{"role": m["role"], "content": m["content"]} for m in history]
-
-    answer = ""
-    try:
-        for text_chunk in rag_engine.ask_openai_stream(api_key, context, message, rag_history):
-            answer += text_chunk
-            yield new_history + [{"role": "assistant", "content": answer}]
-    except Exception as e:
-        answer = f"Error calling Gemini API: {e}"
-        yield new_history + [{"role": "assistant", "content": answer}]
-        return
-
-    # Append sources below the answer
-    sources_md = "\n\n---\n**Sources used:**\n"
-    for src in chunks:
-        confidence = distance_to_confidence(src["distance"])
-        sources_md += (
-            f"\n**{src['source']}** | Confidence: **{confidence}** | Distance: {src['distance']}\n\n"
-            f"{src['text'][:300]}...\n"
+        st.caption(
+            f"{len(docs)} document{'s' if len(docs) != 1 else ''}"
+            f" · {collection.count()} total chunks"
         )
-    yield new_history + [{"role": "assistant", "content": answer + sources_md}]
+    else:
+        st.caption("No documents indexed yet. Upload a file above.")
+
+    if st.button("🗑️ Clear All Data", use_container_width=True):
+        deleted = rag_engine.clear_indexed_documents(collection)
+        for k, v in _DEFAULTS.items():
+            st.session_state[k] = v
+        st.session_state.index_status = {
+            "type": "success", "msg": f"🗑️ Cleared {deleted} indexed chunks."
+        }
+        st.rerun()
+
+    st.markdown("---")
+    st.caption("Built with **Streamlit** · **ChromaDB** · **OpenAI**")
+
+# ── MAIN AREA ─────────────────────────────────────────────────────────────────
+
+st.title("💬 RAG AI Assistant")
+st.caption("Ask questions grounded in your indexed documents · ChromaDB · OpenAI · Streamlit")
+if st.session_state.active_doc:
+    st.info(f"🔍 Searching in: **{st.session_state.active_doc}**")
+st.divider()
+
+# Render accumulated chat history
+for msg in st.session_state.chat_history:
+    with st.chat_message(msg["role"]):
+        st.markdown(msg["content"])
+
+# ── Chat input + streaming ────────────────────────────────────────────────────
+
+if prompt := st.chat_input("Ask a question about your documents…"):
+    resolved_key = os.getenv("OPENAI_API_KEY", "") or api_key
+    if not resolved_key:
+        st.warning("Please enter your OpenAI API key in the sidebar ⚙ Configuration section.")
+    elif collection.count() == 0:
+        st.warning("No documents indexed yet. Upload a file and click **Index Document** first.")
+    else:
+        os.environ["OPENAI_API_KEY"] = resolved_key
+
+        with st.chat_message("user"):
+            st.markdown(prompt)
+        st.session_state.chat_history.append({"role": "user", "content": prompt})
+
+        chunks = rag_engine.search_similar(
+            collection, model, prompt,
+            n_results=top_k,
+            source_filter=st.session_state.active_doc or None,
+        )
+
+        with st.chat_message("assistant"):
+            if not chunks:
+                answer = "I couldn't find relevant content for that question in the indexed documents."
+                st.markdown(answer)
+            else:
+                context = "\n\n".join(
+                    f"[{i}. From: {c['source']}]\n{c['text']}"
+                    for i, c in enumerate(chunks, 1)
+                )
+                rag_history = [
+                    {"role": m["role"], "content": m["content"]}
+                    for m in st.session_state.chat_history[:-1]   # exclude the just-added user msg
+                ]
+                try:
+                    answer = st.write_stream(
+                        rag_engine.ask_openai_stream(resolved_key, context, prompt, rag_history)
+                    )
+                except Exception as e:
+                    answer = f"❌ Error calling OpenAI API: {e}"
+                    st.markdown(answer)
+
+        st.session_state.chat_history.append({"role": "assistant", "content": answer})
+        if chunks:
+            st.session_state.sources_html = _build_sources_md(chunks)
+
+# ── Info tabs (rendered every run, after chat block so sources are current) ───
+
+st.divider()
+tab_sources, tab_preview = st.tabs(["🔍 Retrieved Sources", "📄 Document Preview"])
+
+with tab_sources:
+    if st.session_state.sources_html:
+        st.markdown(st.session_state.sources_html)
+    else:
+        st.caption("Ask a question to see the retrieved source chunks here.")
+
+with tab_preview:
+    if st.session_state.preview_doc:
+        st.markdown(f"📄 **{st.session_state.preview_doc}**")
+        cols = st.columns(3 if st.session_state.preview_word_count else 1)
+        cols[0].metric("Chunks", st.session_state.preview_chunk_count)
+        if st.session_state.preview_word_count:
+            cols[1].metric("Words", f"{st.session_state.preview_word_count:,}")
+            cols[2].metric("Chars", f"{st.session_state.preview_char_count:,}")
+        st.text_area(
+            "Document Excerpt",
+            value=st.session_state.preview_excerpt,
+            height=200,
+            disabled=True,
+        )
+        if st.session_state.preview_chunks_md:
+            st.caption("SAMPLE CHUNKS")
+            st.markdown(st.session_state.preview_chunks_md)
+    else:
+        st.caption("Index a document to see a text preview here.")
 
 
-def submit_message(message: str, history: list, top_k: int, api_key_input: str):
-    """Wrapper so the text box is cleared after submission."""
-    if not message.strip():
-        yield history
-        return
-    for updated_history in chat(message, history, top_k, api_key_input):
-        yield updated_history
-
-
-# ── UI Layout ─────────────────────────────────────────────────────────────────
-
-with gr.Blocks(title="RAG AI Assistant") as demo:
-    gr.Markdown("# RAG AI Assistant\nUpload documents and ask questions — answers are grounded in your files.")
-
-    with gr.Row():
-        # ── Left panel ────────────────────────────────────────────────────────
-        with gr.Column(scale=1, min_width=280):
-            gr.Markdown("## Upload Documents")
-
-            gr.Markdown("### RAG Settings")
-            top_k = gr.Slider(
-                minimum=1, maximum=10, value=5, step=1,
-                label="Top-K Retrieval",
-                info="Number of most relevant chunks retrieved for each question",
-            )
-            chunk_size = gr.Slider(
-                minimum=200, maximum=1000, value=500, step=50,
-                label="Chunk Size",
-                info="Number of characters per chunk during indexing",
-            )
-            overlap = gr.Slider(
-                minimum=20, maximum=250, value=50, step=10,
-                label="Chunk Overlap",
-                info="Overlap between consecutive chunks during indexing",
-            )
-
-            env_key = os.getenv("OPENAI_API_KEY", "")
-            api_key_input = gr.Textbox(
-                label="OpenAI API Key",
-                type="password",
-                placeholder="Get your key from platform.openai.com",
-                value=env_key,
-                visible=not bool(env_key),
-            )
-
-            file_upload = gr.File(
-                label="Choose a PDF or TXT file",
-                file_types=[".pdf", ".txt"],
-            )
-            index_btn = gr.Button("Index Document", variant="primary")
-            index_status = gr.Markdown("")
-
-            gr.Markdown("---")
-            gr.Markdown("### Indexed Documents")
-            docs_display = gr.Markdown(get_indexed_docs_text())
-            clear_btn = gr.Button("Clear Indexed Data", variant="stop")
-
-            gr.Markdown("---")
-            gr.Markdown("*Built with Gradio + ChromaDB + OpenAI*")
-
-        # ── Right panel (chat) ────────────────────────────────────────────────
-        with gr.Column(scale=2):
-            chatbot = gr.Chatbot(
-                label="RAG Chat",
-                height=520,
-                type="messages",
-            )
-            msg_input = gr.Textbox(
-                label="Ask a question about your documents...",
-                placeholder="Type your question and press Enter or click Send",
-                lines=2,
-            )
-            with gr.Row():
-                send_btn = gr.Button("Send", variant="primary")
-                clear_chat_btn = gr.Button("Clear Chat")
-
-    # ── Wire up events ────────────────────────────────────────────────────────
-
-    chunk_size.change(fn=update_overlap_max, inputs=[chunk_size], outputs=[overlap])
-
-    index_btn.click(
-        fn=index_document,
-        inputs=[file_upload, chunk_size, overlap, api_key_input],
-        outputs=[index_status, docs_display],
-    )
-
-    clear_btn.click(
-        fn=clear_data,
-        outputs=[index_status, docs_display, chatbot],
-    )
-
-    send_btn.click(
-        fn=submit_message,
-        inputs=[msg_input, chatbot, top_k, api_key_input],
-        outputs=[chatbot],
-    ).then(fn=lambda: "", outputs=[msg_input])
-
-    msg_input.submit(
-        fn=submit_message,
-        inputs=[msg_input, chatbot, top_k, api_key_input],
-        outputs=[chatbot],
-    ).then(fn=lambda: "", outputs=[msg_input])
-
-    clear_chat_btn.click(fn=lambda: [], outputs=[chatbot])
-
-
-if __name__ == "__main__":
-    demo.launch()
