@@ -1,76 +1,103 @@
 # RAG-Based AI Assistant
 
-A simple **Retrieval-Augmented Generation (RAG)** system that lets you upload documents (PDFs or text files) and ask questions about them. Answers are grounded in your documents — not hallucinated.
+A lightweight Retrieval-Augmented Generation (RAG) application for document Q&A. Upload PDF or TXT files, index them into ChromaDB, and ask grounded questions through a Gradio interface.
 
-## How It Works
+## Features
 
-```
-Upload Document
-    → Extract text from PDF/TXT
-    → Split into chunks (500 chars each)
-    → Convert to embeddings (all-MiniLM-L6-v2)
-    → Store in ChromaDB (vector database)
-
-Ask a Question
-    → Convert question to embedding
-    → Find most similar chunks in ChromaDB
-    → Send chunks as context to GPT-4o-mini (LLM)
-    → Display grounded answer with source citations
-```
+- PDF and TXT ingestion
+- Configurable chunk size, overlap, and top-k retrieval
+- Semantic retrieval using `all-MiniLM-L6-v2` embeddings
+- OpenAI chat-completions streaming responses
+- Source snippets with confidence labels
 
 ## Tech Stack
 
 | Component | Technology |
-|-----------|-----------|
-| User Interface | Streamlit |
-| Vector Database | ChromaDB |
-| Embedding Model | sentence-transformers (`all-MiniLM-L6-v2`) |
-| Language Model | GPT-4o-mini (OpenAI API) |
-| PDF Parsing | PyPDF2 |
+|---|---|
+| UI | Gradio |
+| Vector DB | ChromaDB |
+| Embeddings | sentence-transformers (`all-MiniLM-L6-v2`) |
+| LLM API | OpenAI (`gpt-4o` default, configurable) |
+| Document Parsing | PyPDF2 |
 
-## Setup & Run
-
-**1. Install dependencies**
-```bash
-pip install -r requirements.txt
-```
-
-**2. Set your API key**
-```bash
-cp .env.example .env
-# Edit .env and add your OPENAI_API_KEY
-```
-
-**3. Run the app**
-```bash
-streamlit run app.py
-```
-
-The app opens at `http://localhost:8501` in your browser.
-
-## Usage
-
-1. Enter your OpenAI API key in the sidebar (or set it in `.env`)
-2. Upload a PDF or TXT file using the sidebar uploader
-3. Click **Index Document** to process it
-4. Type your question in the chat box
-5. The assistant will answer using only the content from your documents
-
-## Project Structure
+## Standard Project Structure
 
 ```
 rag-agent-mini-project/
-├── app.py           # Streamlit user interface
-├── rag_engine.py    # Core RAG logic (load, chunk, embed, search, answer)
+├── data/
+│   └── chroma_db/            # Persistent vector store
+├── docs/
+│   └── PROJECT_REPORT.md
+├── src/
+│   └── rag_agent/
+│       ├── __init__.py
+│       ├── app.py            # Gradio application
+│       └── rag_engine.py     # RAG core logic
+├── tests/
+├── .env.example
+├── README.md
 ├── requirements.txt
-├── .env.example     # Template for API key
-└── README.md
+└── SETUP_GUIDE.md
 ```
 
-## Key Concepts Demonstrated
+## Setup
 
-- **Document Chunking**: Long documents are split into 500-character overlapping chunks for better retrieval
-- **Vector Embeddings**: Text is converted to numerical vectors so semantic similarity can be measured
-- **Similarity Search**: ChromaDB finds the most relevant chunks using cosine distance
-- **Prompt Engineering**: Retrieved chunks are injected into GPT-4o-mini's context to produce accurate, grounded answers
-- **RAG Architecture**: Combines retrieval (ChromaDB) with generation (GPT-4o-mini) to reduce hallucinations
+1. Create and activate a virtual environment:
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+```
+
+2. Install dependencies:
+
+```bash
+python -m pip install -r requirements.txt
+```
+
+If your environment blocks installs with an "externally managed environment" error (PEP 668), use:
+
+```bash
+python3 -m pip install --break-system-packages -r requirements.txt
+```
+
+3. Configure environment variables:
+
+```bash
+cp .env.example .env
+```
+
+Set at least:
+
+```env
+OPENAI_API_KEY=your_api_key
+```
+
+Optional:
+
+```env
+OPENAI_MODEL=gpt-4o
+```
+
+## Run
+
+Run from the repository root:
+
+```bash
+PYTHONPATH=src python3 -m rag_agent.app
+```
+
+The Gradio app starts on a local URL shown in terminal output.
+
+## Usage
+
+1. Enter your OpenAI API key in the sidebar if not set in `.env`.
+2. Upload a PDF or TXT document.
+3. Click Index Document.
+4. Ask questions in the chat panel.
+5. Review the source snippets shown with each answer.
+
+## Notes
+
+- Vector data is now persisted under `data/chroma_db`.
+- Existing indexed data from earlier layout has been moved into this directory.
